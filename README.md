@@ -65,7 +65,7 @@ npm install
 npm install -D @tailwindcss/postcss
 ```
 
-## 4) Run the Project (every time you start laptop)
+## 4) Run the Project 
 
 Open two terminals.
 
