@@ -1,6 +1,5 @@
 dataset/
 .venv/
-models/*.keras
 frontend/node_modules/
 frontend/.vite/
 **/__pycache__/

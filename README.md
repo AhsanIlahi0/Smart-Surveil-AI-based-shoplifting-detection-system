@@ -37,6 +37,13 @@ Shoplifting FYP/
 - Node.js 18+
 - npm
 - Windows PowerShell
+- Git LFS
+
+Install and initialize Git LFS once:
+
+```powershell
+git lfs install
+```
 
 ## 2) Backend Setup (first time)
 
@@ -111,5 +118,6 @@ python test_bench.py --video "dataset/test/ShopLifting/shop_lifter_65.mp4"
 ## Notes
 
 - Keep model files inside `models/` with the same names.
+- If you clone this repository on a new machine, run `git lfs pull` in the project root to download model binaries.
 - If frontend says backend offline, set API URL in the dashboard header to `http://localhost:8000`.
 - First run may download EfficientNetV2B0 weights for feature extraction.
