@@ -7,6 +7,10 @@ venv/
 venv-main/
 .venv/
 
+# Environment variables
+.env
+.env.local
+
 # Data / uploads
 uploads/
 

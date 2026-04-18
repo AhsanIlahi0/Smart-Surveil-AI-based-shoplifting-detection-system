@@ -3,7 +3,7 @@ set -e
 
 echo ""
 echo "═══════════════════════════════════════════════"
-echo "  FYP Shoplifting Detection — Local Setup"
+echo "  Smart Surveil — Local Setup"
 echo "═══════════════════════════════════════════════"
 echo ""
 
@@ -24,11 +24,11 @@ fi
 sudo systemctl enable --now postgresql
 
 # Create DB user and database (ignore errors if already exists)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='fyp_user'" | grep -q 1 || \
-  sudo -u postgres psql -c "CREATE USER fyp_user WITH PASSWORD 'fyp_pass';"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='surveil_user'" | grep -q 1 || \
+  sudo -u postgres psql -c "CREATE USER surveil_user WITH PASSWORD 'surveil_pass';"
 
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='fyp_db'" | grep -q 1 || \
-  sudo -u postgres psql -c "CREATE DATABASE fyp_db OWNER fyp_user;"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='smart_surveil'" | grep -q 1 || \
+  sudo -u postgres psql -c "CREATE DATABASE smart_surveil OWNER surveil_user;"
 
 echo "    PostgreSQL ready  ✓"
 

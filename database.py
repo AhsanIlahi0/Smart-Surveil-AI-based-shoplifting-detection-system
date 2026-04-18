@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://fyp_user:fyp_pass@localhost/fyp_db"
+    "DATABASE_URL", "postgresql://surveil_user:surveil_pass@localhost/smart_surveil"
 )
 
 engine = create_engine(DATABASE_URL)

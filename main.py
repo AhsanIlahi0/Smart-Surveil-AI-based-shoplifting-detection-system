@@ -1,10 +1,8 @@
 """
-main.py  —  FYP Shoplifting Detection Backend
+main.py  —  Smart Surveil Backend
 ----------------------------------------------
-Runs locally on Ubuntu / Arch Linux.
-Inference is delegated to a Kaggle kernel via HTTP (ngrok URL).
-Results and incidents are persisted in PostgreSQL.
-Annotated video is streamed frame-by-frame over WebSocket.
+Real-time shoplifting detection system with React frontend.
+Uses YOLOv11 and custom models for video analysis.
 """
 
 from database import engine, get_db, SessionLocal
@@ -14,6 +12,8 @@ import kaggle_client as kc
 import inference
 import asyncio
 import base64
+import httpx
+import json
 import os
 import shutil
 import threading
@@ -46,8 +46,9 @@ load_dotenv()
 # ── Create all tables ──────────────────────────────────────────────────────────
 db_models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="FYP Shoplifting Detection")
+app = FastAPI(title="Smart Surveil - Real-time Shoplifting Detection")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/frontend", StaticFiles(directory="frontend/src", html=True), name="frontend")
 
 UPLOAD_DIR = Path("uploads")
 INCIDENT_DIR = Path("incidents")
@@ -419,8 +420,26 @@ def rtsp_worker(url: str, model: str, loop: asyncio.AbstractEventLoop):
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
-    return FileResponse("static/index.html")
+async def dashboard():
+    # Serve the React app from dev server
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get('http://localhost:3000')
+            return response.text
+    except:
+        return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Smart Surveil</title>
+</head>
+<body>
+    <h1>Smart Surveil Backend Running</h1>
+    <p>React frontend not available. Start with: cd frontend && npx vite dev --host 0.0.0.0 --port 3000</p>
+    <p><a href="/api/docs">API Documentation</a></p>
+</body>
+</html>
+        """
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
