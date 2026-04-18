@@ -1,2 +1,20 @@
-.env
+# Python
+__pycache__/
+*.pyc
+
+# Virtual envs
 venv/
+venv-main/
+.venv/
+
+# Data / uploads
+uploads/
+
+# Models
+*.pt
+*.pth
+*.h5
+*.keras
+
+# Misc
+*.log
