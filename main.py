@@ -11,6 +11,7 @@ from database import engine, get_db, SessionLocal
 import streamer
 import models as db_models
 import kaggle_client as kc
+import inference
 import asyncio
 import base64
 import os
@@ -109,11 +110,10 @@ async def process_video_job(video_id: int, filepath: str, model: str):
 
         with open(filepath, "rb") as f:
             video_bytes = f.read()
-        print(f"[JOB] File read — {
-              len(video_bytes)} bytes, sending to Kaggle...")
+        print(f"[JOB] File read — {len(video_bytes)} bytes, running local inference...")
 
-        data = await kc.predict_video(video_bytes, video.filename, model)
-        print(f"[JOB] Kaggle responded — keys: {list(data.keys())}")
+        data = inference.process_video_local(filepath, model)
+        print(f"[JOB] Local inference completed — keys: {list(data.keys())}")
         result = db_models.InferenceResult(
             video_id=video_id,
             model=data.get("model", model),
@@ -121,7 +121,7 @@ async def process_video_job(video_id: int, filepath: str, model: str):
             total_frames=data.get("total_frames"),
             unique_tracks=data.get("unique_tracks"),
             shoplifting_tracks=data.get("shoplifting_tracks"),
-            inference_seconds=data.get("inference_time_seconds"),
+            inference_seconds=data.get("inference_seconds"),
         )
         db.add(result)
         db.flush()
@@ -158,15 +158,8 @@ async def process_video_job(video_id: int, filepath: str, model: str):
                     "snapshot": snap,
                 }
             )
-        annotated_b64 = data.get("annotated_video_b64", "")
-        annotated_path = None
-        if annotated_b64:
-            annotated_path = str(
-                UPLOAD_DIR / f"annotated_{video_id}_{model}.mp4")
-            with open(annotated_path, "wb") as f:
-                f.write(base64.b64decode(annotated_b64))
-            video.annotated_filepath = annotated_path
-            print(f"[JOB] Annotated video saved to {annotated_path}")
+        # No annotated video from local inference
+        video.annotated_filepath = None
         video.status = "done"
         db.commit()
 
@@ -434,14 +427,16 @@ def dashboard():
 @app.get("/api/health")
 async def health():
     try:
-        kaggle = await kc.health_check()
-        return {"local": "ok", "kaggle": kaggle, "kaggle_url": kc.get_kaggle_url()}
-    except Exception as e:
-        return {
-            "local": "ok",
-            "kaggle": f"unreachable: {e}",
-            "kaggle_url": kc.get_kaggle_url(),
+        # Check if models are loaded
+        inference.load_models()
+        local_status = {
+            "models_loaded": list(inference.models.keys()),
+            "yolo_loaded": inference.yolo_model is not None,
+            "mobilenet_loaded": inference.mobilenet_model is not None,
         }
+        return {"local": "ok", "models": local_status}
+    except Exception as e:
+        return {"local": f"error: {e}"}
 
 
 # ── Update Kaggle URL at runtime (no restart needed) ───────────────────────────
@@ -811,9 +806,10 @@ async def ws_infer(ws: WebSocket, video_id: int, db: Session = Depends(get_db)):
                     }
                 )
 
-        await kc.predict_video_stream(
-            video_bytes, video.filename, video.model_used, on_frame
-        )
+        # Use local streaming
+        for line in inference.stream_video_inference(video.filepath, video.model_used):
+            payload = json.loads(line.strip())
+            await on_frame(payload)
 
         video.status = "done"
         db.commit()

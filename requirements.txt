@@ -8,3 +8,7 @@ httpx
 aiofiles
 opencv-python-headless
 numpy
+tensorflow-cpu
+ultralytics
+scikit-learn
+pillow
