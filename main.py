@@ -47,8 +47,8 @@ load_dotenv()
 db_models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Smart Surveil - Real-time Shoplifting Detection")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/frontend", StaticFiles(directory="frontend/src", html=True), name="frontend")
+
+FRONTEND_DIST = Path("frontend") / "dist"
 
 UPLOAD_DIR = Path("uploads")
 INCIDENT_DIR = Path("incidents")
@@ -421,6 +421,9 @@ def rtsp_worker(url: str, model: str, loop: asyncio.AbstractEventLoop):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
+    if FRONTEND_DIST.exists():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
     # Serve the React app from dev server
     try:
         async with httpx.AsyncClient() as client:
@@ -844,6 +847,10 @@ async def ws_infer(ws: WebSocket, video_id: int, db: Session = Depends(get_db)):
             await ws.send_json({"type": "ERROR", "message": str(e)})
         except Exception:
             pass
+
+
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
 
 # @app.websocket("/ws/stream/{video_id}")
