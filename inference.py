@@ -6,6 +6,7 @@ Adapted from Kaggle kernel code.
 import os
 import base64
 import json
+import asyncio
 import cv2
 import numpy as np
 from datetime import datetime
@@ -27,6 +28,7 @@ MOBILENET_DIM = 1280
 PCA_DIM = 98
 MODEL_A_DIM = 1378  # 1280 + 98
 MODEL_BC_DIM = 1280
+FRAME_SKIP = 2  # Stream every 2nd frame (2x speed on dashboard)
 
 # Colors
 COLOR_SHOPLIFT = (60, 80, 255)
@@ -148,7 +150,7 @@ def draw_hud(frame, model_key, frame_idx, active_tracks):
         y += 22
 
 # Main inference function
-def process_video_local(video_path, model_key):
+def process_video_local(video_path, model_key, alert_manager=None, video_id=None, loop=None):
     load_models()  # Ensure models are loaded
 
     cap = cv2.VideoCapture(video_path)
@@ -225,6 +227,22 @@ def process_video_local(video_path, model_key):
             annotate_frame(frame, track_id, box, label, prob, model_key)
 
         draw_hud(frame, model_key, frame_idx, len(boxes_data))
+
+        # Broadcast frame for real-time viewing (every Nth frame for speed)
+        if alert_manager and video_id and loop and frame_idx % FRAME_SKIP == 0:
+            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 55])
+            b64_frame = base64.b64encode(buf).decode()
+            asyncio.run_coroutine_threadsafe(
+                alert_manager.broadcast({
+                    "type": "FRAME",
+                    "video_id": video_id,
+                    "frame": b64_frame,
+                    "frame_idx": frame_idx,
+                    "total": total_frames,
+                    "alert": any(l == "Shoplifting" for l, _ in track_labels.values())
+                }),
+                loop
+            )
 
         # Summary frame every 1/8 of video
         if frame_idx % max(1, total_frames // 8) == 0:
@@ -329,18 +347,20 @@ def stream_video_inference(video_path, model_key):
 
         draw_hud(frame, model_key, frame_idx, len(boxes_data))
 
-        # Encode annotated frame as JPEG → base64
-        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        b64 = base64.b64encode(buf).decode()
+        # Only stream every Nth frame to frontend to increase dashboard display speed
+        if frame_idx % FRAME_SKIP == 0:
+            # Encode annotated frame as JPEG → base64 (reduced quality = faster)
+            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 55])
+            b64 = base64.b64encode(buf).decode()
 
-        payload = {
-            "type": "frame",
-            "frame": b64,
-            "frame_idx": frame_idx,
-            "total": total,
-            "incidents": incidents_this_frame,
-        }
-        yield json.dumps(payload) + "\n"
+            payload = {
+                "type": "frame",
+                "frame": b64,
+                "frame_idx": frame_idx,
+                "total": total,
+                "incidents": incidents_this_frame,
+            }
+            yield json.dumps(payload) + "\n"
 
     cap.release()
     yield json.dumps({"type": "done", "total_frames": frame_idx}) + "\n"

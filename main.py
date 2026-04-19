@@ -113,7 +113,7 @@ async def process_video_job(video_id: int, filepath: str, model: str):
             video_bytes = f.read()
         print(f"[JOB] File read — {len(video_bytes)} bytes, running local inference...")
 
-        data = inference.process_video_local(filepath, model)
+        data = inference.process_video_local(filepath, model, alert_manager, video_id, asyncio.get_running_loop())
         print(f"[JOB] Local inference completed — keys: {list(data.keys())}")
         result = db_models.InferenceResult(
             video_id=video_id,

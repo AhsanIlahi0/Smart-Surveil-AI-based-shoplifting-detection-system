@@ -271,8 +271,10 @@ function SmartSurveil() {
         body: fd,
       });
       const d = await r.json();
-      setUploadStatus(`Video #${d.video_id} uploaded — connecting stream…`);
-      window.setTimeout(() => startInferStream(d.video_id), 500);
+      setActiveVideoId(d.video_id);
+      setFeedSource(`Video #${d.video_id} — Live Inference`);
+      setUploadStatus(`Video #${d.video_id} uploaded — starting live stream…`);
+      startInferStream(d.video_id);
     } catch (err) {
       setUploadStatus(`Upload failed: ${(err as Error).message}`);
     }
@@ -376,7 +378,13 @@ function SmartSurveil() {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "FRAME") {
-            setFeedFrame(msg.frame);
+            // For upload frames, check video_id matches active
+            if (!msg.video_id || msg.video_id === activeVideoId) {
+              setFeedFrame(msg.frame);
+              if (msg.frame_idx && msg.total) {
+                setProgress((msg.frame_idx / msg.total) * 100);
+              }
+            }
           } else if (msg.type === "ALERT") {
             playAlertSound();
             pushAlert(msg);
@@ -389,6 +397,11 @@ function SmartSurveil() {
             loadVideos();
             if (msg.status === "done" || msg.status === "processing") {
               loadStats();
+            }
+            if (msg.status === "done" && msg.video_id === activeVideoId) {
+              setProgress(100);
+              setShowReplay(true);
+              setFeedSource((s) => s + " — Done");
             }
           } else if (msg.type === "RTSP_ERROR") {
             setRtspStatus(`Error: ${msg.error}`);
