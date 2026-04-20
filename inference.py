@@ -28,7 +28,9 @@ MOBILENET_DIM = 1280
 PCA_DIM = 98
 MODEL_A_DIM = 1378  # 1280 + 98
 MODEL_BC_DIM = 1280
-FRAME_SKIP = 2  # Stream every 2nd frame (2x speed on dashboard)
+FRAME_SKIP = 4  # Stream every 4th frame to keep the dashboard responsive
+STREAM_MAX_WIDTH = 960
+STREAM_JPEG_QUALITY = 45
 
 # Colors
 COLOR_SHOPLIFT = (60, 80, 255)
@@ -46,6 +48,15 @@ yolo_model = None
 mobilenet_model = None
 pca_model = None
 models = {}
+
+
+def invert_labels() -> bool:
+    return os.getenv("INVERT_LOCAL_INFERENCE_LABELS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 def load_models():
     global yolo_model, mobilenet_model, pca_model, models
@@ -119,38 +130,200 @@ def predict_window(window, model_key):
     else:
         prob = float(models[model_key].predict(x, verbose=0)[0][0])
 
-    label = "Shoplifting" if prob >= THRESHOLDS[model_key] else "Normal"
+    is_shoplifting = prob >= THRESHOLDS[model_key]
+    if invert_labels():
+        is_shoplifting = not is_shoplifting
+
+    label = "Shoplifting" if is_shoplifting else "Normal"
     return label, round(prob, 6)
 
 def annotate_frame(frame, track_id, box, label, prob, model_key):
     x1, y1, x2, y2 = map(int, box)
     color = COLOR_SHOPLIFT if label == "Shoplifting" else (COLOR_NORMAL if label == "Normal" else COLOR_UNKNOWN)
+    box_w = max(1, x2 - x1)
+    box_h = max(1, y2 - y1)
+
+    # Soft translucent fill inside the box for a modern "glass" effect
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    frame[:] = cv2.addWeighted(overlay, 0.10, frame, 0.90, 0)
+
+    # Main border + corner accents for a cleaner cinematic look
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    tag = f"ID:{track_id} {label} {prob:.4f}"
-    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-    ty = max(y1 - 6, th + 4)
-    cv2.rectangle(frame, (x1, ty - th - 6), (x1 + tw + 8, ty + 2), (10, 10, 10), -1)
-    cv2.putText(frame, tag, (x1 + 4, ty - 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+    corner = max(8, min(box_w, box_h) // 5)
+    cv2.line(frame, (x1, y1), (x1 + corner, y1), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x1, y1), (x1, y1 + corner), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x2, y1), (x2 - corner, y1), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x2, y1), (x2, y1 + corner), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x1, y2), (x1 + corner, y2), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x1, y2), (x1, y2 - corner), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x2, y2), (x2 - corner, y2), color, 3, cv2.LINE_AA)
+    cv2.line(frame, (x2, y2), (x2, y2 - corner), color, 3, cv2.LINE_AA)
+
+    # Floating label card
+    tag = f"#{track_id}  {label}"
+    prob_tag = f"{prob:.1%}"
+    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+    (pw, _), _ = cv2.getTextSize(prob_tag, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+    card_w = tw + pw + 28
+    card_h = th + 12
+    card_y2 = y1 - 6 if y1 > (card_h + 10) else y1 + card_h + 6
+    card_y1 = card_y2 - card_h
+    card_x1 = x1
+    card_x2 = x1 + card_w
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (card_x1, card_y1), (card_x2, card_y2), (22, 24, 30), -1)
+    frame[:] = cv2.addWeighted(overlay, 0.72, frame, 0.28, 0)
+    cv2.rectangle(frame, (card_x1, card_y1), (card_x2, card_y2), color, 1)
+
+    cv2.putText(frame, tag, (card_x1 + 8, card_y2 - 7),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (238, 240, 245), 1, cv2.LINE_AA)
+    cv2.putText(frame, prob_tag, (card_x2 - pw - 8, card_y2 - 7),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1, cv2.LINE_AA)
+
+    # Confidence progress bar at the box bottom
+    bar_y1 = y2 + 4
+    bar_y2 = y2 + 9
+    if bar_y2 < frame.shape[0]:
+        cv2.rectangle(frame, (x1, bar_y1), (x2, bar_y2), (45, 50, 58), -1)
+        fill_x = x1 + int((x2 - x1) * max(0.0, min(1.0, prob)))
+        cv2.rectangle(frame, (x1, bar_y1), (fill_x, bar_y2), color, -1)
     return frame
 
 def draw_hud(frame, model_key, frame_idx, active_tracks):
     lines = [
         f"Model {model_key}",
-        f"Threshold: {THRESHOLDS[model_key]}",
-        f"Frame: {frame_idx}",
-        f"Active persons: {active_tracks}",
+        f"Threshold {THRESHOLDS[model_key]:.2f}",
+        f"Frame {frame_idx}",
+        f"Tracks {active_tracks}",
     ]
-    y = 18
+
+    widths = []
     for line in lines:
-        (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
-        cv2.rectangle(frame, (6, y - th - 4), (14 + tw, y + 4), (20, 20, 20), -1)
-        cv2.putText(frame, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA)
-        y += 22
+        (tw, _), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.53, 1)
+        widths.append(tw)
+
+    panel_x1, panel_y1 = 10, 10
+    panel_x2 = panel_x1 + max(widths) + 28
+    panel_y2 = panel_y1 + 24 * len(lines) + 10
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (panel_x1, panel_y1), (panel_x2, panel_y2), (18, 20, 26), -1)
+    frame[:] = cv2.addWeighted(overlay, 0.60, frame, 0.40, 0)
+    cv2.rectangle(frame, (panel_x1, panel_y1), (panel_x2, panel_y2), (90, 96, 108), 1)
+
+    y = panel_y1 + 20
+    for line in lines:
+        cv2.putText(frame, line, (panel_x1 + 10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.53, (232, 236, 242), 1, cv2.LINE_AA)
+        y += 24
+
+
+def create_live_state():
+    return {
+        "track_windows": defaultdict(lambda: deque(maxlen=WINDOW_SIZE)),
+        "track_labels": defaultdict(lambda: ("Pending", 0.0)),
+        "track_prev_gray": {},
+        "logged_tracks": set(),
+    }
+
+
+def infer_and_annotate_live_frame(frame, model_key, frame_idx, state, video_name="live"):
+    """Run the same per-frame pipeline used by uploaded video streaming on a live frame."""
+    track_windows = state["track_windows"]
+    track_labels = state["track_labels"]
+    track_prev_gray = state["track_prev_gray"]
+    logged_tracks = state["logged_tracks"]
+
+    results = yolo_model.track(
+        frame,
+        classes=[0],
+        conf=YOLO_CONF,
+        tracker="bytetrack.yaml",
+        persist=True,
+        verbose=False,
+    )
+
+    boxes_data = []
+    if results[0].boxes is not None and results[0].boxes.id is not None:
+        ids = results[0].boxes.id.cpu().numpy().astype(int)
+        boxes = results[0].boxes.xyxy.cpu().numpy()
+        for tid, box in zip(ids, boxes):
+            boxes_data.append((int(tid), box))
+
+    curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    incidents_this_frame = []
+
+    for track_id, box in boxes_data:
+        crop_rgb = crop_person(frame, box)
+        mn_feat = mobilenet_feat(crop_rgb)
+
+        if model_key == "A":
+            pg = track_prev_gray.get(track_id)
+            of_feat = (
+                optical_flow_feat(pg, curr_gray)
+                if pg is not None
+                else np.zeros(PCA_DIM, dtype=np.float32)
+            )
+            feat = np.concatenate([mn_feat, of_feat])
+        else:
+            feat = mn_feat
+
+        track_windows[track_id].append(feat)
+        track_prev_gray[track_id] = curr_gray.copy()
+
+        if len(track_windows[track_id]) == WINDOW_SIZE:
+            label, prob = predict_window(track_windows[track_id], model_key)
+            track_labels[track_id] = (label, prob)
+
+            if label == "Shoplifting" and track_id not in logged_tracks:
+                logged_tracks.add(track_id)
+                incidents_this_frame.append(
+                    {
+                        "timestamp_utc": datetime.utcnow().isoformat(),
+                        "video": video_name,
+                        "frame_index": frame_idx,
+                        "track_id": track_id,
+                        "model": model_key,
+                        "probability": prob,
+                        "threshold": THRESHOLDS[model_key],
+                    }
+                )
+
+        label, prob = track_labels[track_id]
+        annotate_frame(frame, track_id, box, label, prob, model_key)
+
+    draw_hud(frame, model_key, frame_idx, len(boxes_data))
+
+    known_labels = [(label, prob) for label, prob in track_labels.values() if label != "Pending"]
+    if any(label == "Shoplifting" for label, _ in known_labels):
+        probs = [prob for label, prob in known_labels if label == "Shoplifting"]
+        return incidents_this_frame, "Shoplifting", max(probs) if probs else 0.0
+    if known_labels:
+        return incidents_this_frame, "Normal", max(prob for _, prob in known_labels)
+    return incidents_this_frame, "Pending", 0.0
+
+
+def encode_stream_frame(frame, quality=STREAM_JPEG_QUALITY):
+    height, width = frame.shape[:2]
+    if width > STREAM_MAX_WIDTH:
+        scale = STREAM_MAX_WIDTH / float(width)
+        frame = cv2.resize(frame, (STREAM_MAX_WIDTH, max(1, int(height * scale))))
+
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return base64.b64encode(buf).decode()
 
 # Main inference function
-def process_video_local(video_path, model_key, alert_manager=None, video_id=None, loop=None):
+def process_video_local(
+    video_path,
+    model_key,
+    alert_manager=None,
+    video_id=None,
+    loop=None,
+    should_stop=None,
+    output_video_path=None,
+):
     load_models()  # Ensure models are loaded
 
     cap = cv2.VideoCapture(video_path)
@@ -162,6 +335,12 @@ def process_video_local(video_path, model_key, alert_manager=None, video_id=None
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     video_name = os.path.basename(video_path)
 
+    # Initialize video writer for annotated output if path provided
+    out = None
+    if output_video_path:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (w, h))
+
     track_windows = defaultdict(lambda: deque(maxlen=WINDOW_SIZE))
     track_labels = defaultdict(lambda: ("Pending", 0.0))
     track_prev_gray = {}
@@ -172,7 +351,13 @@ def process_video_local(video_path, model_key, alert_manager=None, video_id=None
     summary_frames = []
     total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
 
+    cancelled = False
+
     while True:
+        if should_stop and should_stop():
+            cancelled = True
+            break
+
         ret, frame = cap.read()
         if not ret:
             break
@@ -228,10 +413,13 @@ def process_video_local(video_path, model_key, alert_manager=None, video_id=None
 
         draw_hud(frame, model_key, frame_idx, len(boxes_data))
 
+        # Write annotated frame to output video
+        if out:
+            out.write(frame)
+
         # Broadcast frame for real-time viewing (every Nth frame for speed)
         if alert_manager and video_id and loop and frame_idx % FRAME_SKIP == 0:
-            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 55])
-            b64_frame = base64.b64encode(buf).decode()
+            b64_frame = encode_stream_frame(frame)
             asyncio.run_coroutine_threadsafe(
                 alert_manager.broadcast({
                     "type": "FRAME",
@@ -246,12 +434,14 @@ def process_video_local(video_path, model_key, alert_manager=None, video_id=None
 
         # Summary frame every 1/8 of video
         if frame_idx % max(1, total_frames // 8) == 0:
-            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            summary_frames.append(base64.b64encode(buf).decode())
+            summary_frames.append(encode_stream_frame(frame, quality=70))
 
     cap.release()
+    if out:
+        out.release()
 
     return {
+        "cancelled": cancelled,
         "model": model_key,
         "threshold": THRESHOLDS[model_key],
         "total_frames": frame_idx,
@@ -260,9 +450,10 @@ def process_video_local(video_path, model_key, alert_manager=None, video_id=None
         "inference_seconds": 0.0,  # Placeholder, can add timing
         "incidents": incidents,
         "summary_frames": summary_frames,
+        "output_video_path": output_video_path,
     }
 
-def stream_video_inference(video_path, model_key):
+def stream_video_inference(video_path, model_key, should_stop=None):
     """Generator for streaming annotated frames as NDJSON."""
     load_models()
 
@@ -290,6 +481,10 @@ def stream_video_inference(video_path, model_key):
     }) + "\n"
 
     while True:
+        if should_stop and should_stop():
+            yield json.dumps({"type": "stopped"}) + "\n"
+            break
+
         ret, frame = cap.read()
         if not ret:
             break
@@ -350,8 +545,7 @@ def stream_video_inference(video_path, model_key):
         # Only stream every Nth frame to frontend to increase dashboard display speed
         if frame_idx % FRAME_SKIP == 0:
             # Encode annotated frame as JPEG → base64 (reduced quality = faster)
-            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 55])
-            b64 = base64.b64encode(buf).decode()
+            b64 = encode_stream_frame(frame)
 
             payload = {
                 "type": "frame",

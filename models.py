@@ -1,7 +1,11 @@
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from database import Base
+
+if __package__:
+    from .database import Base
+else:
+    from database import Base
 
 
 class Video(Base):
@@ -10,7 +14,7 @@ class Video(Base):
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, nullable=False)
     filepath = Column(String)  # local path: uploads/
-    # pending|processing|done|failed
+    # pending|processing|done|failed|stopped
     status = Column(String, default="pending")
     source_type = Column(String, default="upload")  # upload|rtsp
     source_url = Column(String)  # rtsp URL if applicable

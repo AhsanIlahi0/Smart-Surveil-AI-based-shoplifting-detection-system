@@ -30,7 +30,13 @@ async def health_check() -> dict:
         return r.json()
 
 
-async def predict_video_stream(video_bytes: bytes, filename: str, model: str, on_frame):
+async def predict_video_stream(
+    video_bytes: bytes,
+    filename: str,
+    model: str,
+    on_frame,
+    should_stop=None,
+):
     """
     Streams frames from Kaggle as they are processed.
     on_frame(payload_dict) is called for every line received.
@@ -46,6 +52,8 @@ async def predict_video_stream(video_bytes: bytes, filename: str, model: str, on
             if not r.is_success:
                 raise RuntimeError(f"Stream failed {r.status_code}")
             async for line in r.aiter_lines():
+                if should_stop and should_stop():
+                    break
                 line = line.strip()
                 if line:
                     payload = json.loads(line)
@@ -86,7 +94,6 @@ async def predict_webcam_frames(frames_b64: list[str], model: str = "B") -> dict
         )
         if not r.is_success:
             raise RuntimeError(
-                f"Kaggle /predict/webcam failed {
-                    r.status_code}: {r.text[:300]}"
+                f"Kaggle /predict/webcam failed {r.status_code}: {r.text[:300]}"
             )
         return r.json()

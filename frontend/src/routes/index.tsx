@@ -50,7 +50,7 @@ export const Route = createFileRoute("/")({
 
 // ── Types matching backend contract from index.html ──
 type DotState = "idle" | "ok" | "warn" | "err";
-type VideoStatus = "pending" | "processing" | "done" | "failed";
+type VideoStatus = "pending" | "processing" | "done" | "failed" | "stopped";
 type VideoRow = {
   id: number;
   filename: string;
@@ -79,7 +79,7 @@ type AlertMsg = {
 };
 
 const MODELS = [
-  { id: "B", label: "Model B — D1 Dataset (recommended)" },
+  { id: "B", label: "Model B — D1 Dataset " },
   { id: "A", label: "Model A — D1+Lab, Attention LSTM" },
   { id: "C", label: "Model C — Lab Dataset" },
 ];
@@ -118,7 +118,11 @@ function SmartSurveil() {
 
   const [model, setModel] = useState("B");
   const [rtspModel, setRtspModel] = useState("B");
+  const [rtspSourceType, setRtspSourceType] = useState<"rtsp" | "camera">(
+    "rtsp",
+  );
   const [rtspUrl, setRtspUrl] = useState("");
+  const [rtspCameraIndex, setRtspCameraIndex] = useState("0");
   const [file, setFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState("");
   const [rtspStatus, setRtspStatus] = useState("");
@@ -130,6 +134,7 @@ function SmartSurveil() {
   const [alerting, setAlerting] = useState(false);
   const [activeVideoId, setActiveVideoId] = useState<number | null>(null);
   const [showReplay, setShowReplay] = useState(false);
+  const [hasAnnotatedVideo, setHasAnnotatedVideo] = useState(false);
 
   // ── data ──
   const [videos, setVideos] = useState<VideoRow[]>([]);
@@ -219,31 +224,46 @@ function SmartSurveil() {
       setShowReplay(false);
       setProgress(0);
       setFeedFrame(null);
+      const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
 
       const ws = new WebSocket(
-        `ws://${window.location.host}/ws/infer/${videoId}`,
+        `${wsScheme}://${window.location.host}/ws/infer/${videoId}`,
       );
       streamWsRef.current = ws;
 
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === "frame") {
+          const msgType = String(msg.type ?? "").toLowerCase();
+
+          if (msgType === "frame") {
             setFeedFrame(msg.frame);
             if (msg.total && msg.frame_idx) {
               setProgress((msg.frame_idx / msg.total) * 100);
             }
-          } else if (msg.type === "meta") {
+          } else if (msgType === "meta") {
             setFeedSource(
               `Video #${videoId} · ${msg.model} · ${msg.total} frames · ${Math.round(msg.fps)}fps`,
             );
-          } else if (msg.type === "done") {
+          } else if (msgType === "status") {
+            const status = String(msg.status ?? "").toLowerCase();
+            if (status) {
+              setUploadStatus(`Video #${videoId}: ${status.toUpperCase()}`);
+            }
+            if (status === "done") {
+              setProgress(100);
+              setShowReplay(true);
+              setFeedSource((s) => s + " — Done");
+              loadStats();
+              loadVideos();
+            }
+          } else if (msgType === "done") {
             setProgress(100);
             setShowReplay(true);
             setFeedSource((s) => s + " — Done");
             loadStats();
             loadVideos();
-          } else if (msg.type === "ERROR") {
+          } else if (msgType === "error") {
             setUploadStatus(`Error: ${msg.message}`);
           }
         } catch {
@@ -251,6 +271,14 @@ function SmartSurveil() {
         }
       };
       ws.onerror = () => setUploadStatus("Stream connection error");
+      ws.onclose = (e) => {
+        if (streamWsRef.current === ws) {
+          streamWsRef.current = null;
+        }
+        if (!e.wasClean && e.code !== 1000) {
+          setUploadStatus(`Stream closed unexpectedly (code ${e.code})`);
+        }
+      };
     },
     [loadStats, loadVideos],
   );
@@ -282,12 +310,17 @@ function SmartSurveil() {
 
   // ── RTSP ──
   const startRtsp = useCallback(async () => {
-    if (!rtspUrl.trim()) {
-      setRtspStatus("Enter RTSP URL");
-      return;
-    }
     const fd = new FormData();
-    fd.append("url", rtspUrl.trim());
+    fd.append("source_type", rtspSourceType);
+    if (rtspSourceType === "rtsp") {
+      if (!rtspUrl.trim()) {
+        setRtspStatus("Enter RTSP URL");
+        return;
+      }
+      fd.append("url", rtspUrl.trim());
+    } else {
+      fd.append("camera_index", rtspCameraIndex.trim() || "0");
+    }
     fd.append("model", rtspModel);
     try {
       const r = await fetch("/api/rtsp/start", {
@@ -295,15 +328,22 @@ function SmartSurveil() {
         body: fd,
       });
       const d = await r.json();
-      setRtspStatus(d.ok ? `Streaming ${rtspUrl}` : d.message || "Error");
+      const sourceLabel =
+        rtspSourceType === "camera"
+          ? `Device Camera #${rtspCameraIndex.trim() || "0"}`
+          : rtspUrl;
+      setRtspStatus(d.ok ? `Streaming ${sourceLabel}` : d.message || "Error");
       if (d.ok) {
-        setFeedSource("RTSP LIVE");
+        setFeedSource(
+          `${rtspSourceType === "camera" ? "DEVICE CAMERA" : "RTSP LIVE"} · Model ${rtspModel}`,
+        );
         setFeedFrame(null);
+        setProgress(0);
       }
     } catch (err) {
       setRtspStatus(`Failed: ${(err as Error).message}`);
     }
-  }, [rtspUrl, rtspModel]);
+  }, [rtspUrl, rtspModel, rtspSourceType, rtspCameraIndex]);
 
   const stopRtsp = useCallback(async () => {
     try {
@@ -316,7 +356,26 @@ function SmartSurveil() {
     setFeedFrame(null);
   }, []);
 
-  const stopStream = useCallback(() => {
+  const stopStream = useCallback(async () => {
+    const stopRequests: Promise<Response>[] = [];
+
+    if (activeVideoId !== null) {
+      stopRequests.push(
+        fetch(`/api/videos/${activeVideoId}/stop`, { method: "POST" }),
+      );
+      setUploadStatus(`Stop requested for video #${activeVideoId}`);
+    }
+
+    // Also stop RTSP if it is running; safe to call even when already stopped.
+    stopRequests.push(fetch("/api/rtsp/stop", { method: "POST" }));
+
+    if (stopRequests.length > 0) {
+      await Promise.allSettled(stopRequests);
+    }
+
+    loadVideos();
+    setRtspStatus("Stopped");
+
     if (streamWsRef.current) {
       streamWsRef.current.close();
       streamWsRef.current = null;
@@ -325,11 +384,35 @@ function SmartSurveil() {
     setFeedSource("— no source —");
     setShowReplay(false);
     setProgress(0);
-  }, []);
+    setActiveVideoId(null);
+  }, [activeVideoId, loadVideos]);
 
   const replayVideo = useCallback(() => {
     if (activeVideoId !== null) startInferStream(activeVideoId);
   }, [activeVideoId, startInferStream]);
+
+  const downloadAnnotatedVideo = useCallback(async () => {
+    if (activeVideoId !== null) {
+      try {
+        const response = await fetch(`/api/videos/${activeVideoId}/download`);
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `video_${activeVideoId}_annotated.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        } else {
+          setUploadStatus("Download failed: video not ready");
+        }
+      } catch (err) {
+        setUploadStatus(`Download error: ${(err as Error).message}`);
+      }
+    }
+  }, [activeVideoId]);
 
   const dismissAlert = useCallback((id: string) => {
     setAlerts((a) => a.filter((x) => x.id !== id));
@@ -339,7 +422,7 @@ function SmartSurveil() {
 
   const selectVideo = useCallback(
     (v: VideoRow) => {
-      if (v.status === "done" || v.status === "pending") {
+      if (v.status === "done" || v.status === "pending" || v.status === "stopped") {
         startInferStream(v.id);
       }
     },
@@ -352,7 +435,8 @@ function SmartSurveil() {
 
     function connect() {
       if (cancelled) return;
-      const ws = new WebSocket(`ws://${window.location.host}/ws/alerts`);
+      const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${wsScheme}://${window.location.host}/ws/alerts`);
       alertWsRef.current = ws;
 
       ws.onopen = () => {
@@ -374,7 +458,7 @@ function SmartSurveil() {
 
       ws.onerror = () => setWsState("err");
 
-      ws.onmessage = (e) => {
+      ws.onmessage = async (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "FRAME") {
@@ -395,13 +479,29 @@ function SmartSurveil() {
               `Video #${msg.video_id}: ${String(msg.status).toUpperCase()}`,
             );
             loadVideos();
-            if (msg.status === "done" || msg.status === "processing") {
+            if (
+              msg.status === "done" ||
+              msg.status === "processing" ||
+              msg.status === "stopped"
+            ) {
               loadStats();
             }
             if (msg.status === "done" && msg.video_id === activeVideoId) {
               setProgress(100);
               setShowReplay(true);
               setFeedSource((s) => s + " — Done");
+              // Check if annotated video is available
+              try {
+                const resp = await fetch(`/api/videos/${msg.video_id}`);
+                const data = await resp.json();
+                setHasAnnotatedVideo(data.has_annotated_video || false);
+              } catch {
+                setHasAnnotatedVideo(false);
+              }
+            } else if (msg.status === "stopped" && msg.video_id === activeVideoId) {
+              setShowReplay(false);
+              setProgress(0);
+              setFeedSource(`Video #${msg.video_id} — Stopped`);
             }
           } else if (msg.type === "RTSP_ERROR") {
             setRtspStatus(`Error: ${msg.error}`);
@@ -592,13 +692,29 @@ function SmartSurveil() {
               </div>
             ) : (
               <div className="space-y-2.5">
-                <Field label="RTSP URL">
-                  <Input
-                    value={rtspUrl}
-                    onChange={setRtspUrl}
-                    placeholder="rtsp://192.168.1.x:554/stream"
-                  />
+                <Field label="Source type">
+                  <Select value={rtspSourceType} onChange={(v) => setRtspSourceType(v as "rtsp" | "camera") }>
+                    <option value="rtsp">RTSP URL</option>
+                    <option value="camera">Device camera</option>
+                  </Select>
                 </Field>
+                {rtspSourceType === "rtsp" ? (
+                  <Field label="RTSP URL">
+                    <Input
+                      value={rtspUrl}
+                      onChange={setRtspUrl}
+                      placeholder="rtsp://192.168.1.x:554/stream"
+                    />
+                  </Field>
+                ) : (
+                  <Field label="Camera index">
+                    <Input
+                      value={rtspCameraIndex}
+                      onChange={setRtspCameraIndex}
+                      placeholder="0"
+                    />
+                  </Field>
+                )}
                 <Field label="Model">
                   <Select value={rtspModel} onChange={setRtspModel}>
                     {MODELS.map((m) => (
@@ -698,12 +814,22 @@ function SmartSurveil() {
             </div>
             <div className="ml-auto flex gap-1.5">
               {showReplay && (
-                <button
-                  onClick={replayVideo}
-                  className="rounded-md border border-border bg-background px-2.5 py-1 text-[0.72rem] font-medium text-foreground transition hover:bg-muted"
-                >
-                  ↺ Replay
-                </button>
+                <>
+                  <button
+                    onClick={replayVideo}
+                    className="rounded-md border border-border bg-background px-2.5 py-1 text-[0.72rem] font-medium text-foreground transition hover:bg-muted"
+                  >
+                    ↺ Replay
+                  </button>
+                  {hasAnnotatedVideo && (
+                    <button
+                      onClick={downloadAnnotatedVideo}
+                      className="rounded-md border border-border bg-background px-2.5 py-1 text-[0.72rem] font-medium text-foreground transition hover:bg-muted"
+                    >
+                      ↓ Download
+                    </button>
+                  )}
+                </>
               )}
               <button
                 onClick={stopStream}
@@ -937,6 +1063,7 @@ function VideoStatusBadge({ status }: { status: VideoStatus }) {
       cls: "bg-amber-50 text-amber-700 ring-amber-200",
       label: "Proc",
     },
+    stopped: { cls: "bg-zinc-100 text-zinc-700 ring-zinc-300", label: "Stop" },
     failed: { cls: "bg-red-50 text-red-700 ring-red-200", label: "Fail" },
     pending: { cls: "bg-slate-50 text-slate-600 ring-slate-200", label: "Pend" },
   };
